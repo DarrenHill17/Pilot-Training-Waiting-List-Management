@@ -23,8 +23,11 @@ cursor = conn.cursor()
 def update_db():
     print("========= Syncing Database =========")
     data_sync()
+    print("\nUpdating hours for new user(s).")
     update_null_hours()
+    print("Hour update complete.\n\nUpdating 3-month check start dates.")
     update_null_check_start_dates()
+    print("Start date update complete.")
 
 
 # Sync DB with latest update.csv file
@@ -91,8 +94,7 @@ def get_hours(cid, start, end):
     pilot_hours = get_pilot_hours(cid, start, end)
     time.sleep(7)
     atc_hours = get_atc_hours(cid, start, end)
-    print(pilot_hours, atc_hours)
-    return pilot_hours, atc_hours
+    return round(pilot_hours, 2), round(atc_hours, 2)
     
 
 def get_pilot_hours(cid, start, end):
@@ -168,15 +170,24 @@ def get_atc_hours(cid, start, end):
 
 # Change the null 3 month checker start dates to the first of the next month
 def update_null_check_start_dates():
-    today = datetime.today()
-    first_of_next_month = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
-    date_str = first_of_next_month.strftime('%Y-%m-%d')
-
     cursor.execute("""
-        UPDATE LIST
-        SET three_month_check_start_date = ?
+        SELECT cid, list_join_date
+        FROM LIST
         WHERE three_month_check_start_date IS NULL
-    """, (date_str,))
+    """)
+
+    rows = cursor.fetchall()
+
+    for cid, join_date_str in rows:
+        join_date = datetime.strptime(join_date_str, '%d/%m/%Y %H:%M:%S')  # Adjust format if needed
+        first_of_next_month = (join_date.replace(day=1) + timedelta(days=32)).replace(day=1)
+        date_str = first_of_next_month.strftime('%Y-%m-%d')
+
+        cursor.execute("""
+            UPDATE LIST
+            SET three_month_check_start_date = ?
+            WHERE cid = ?
+        """, (date_str, cid))
 
     conn.commit()
 
