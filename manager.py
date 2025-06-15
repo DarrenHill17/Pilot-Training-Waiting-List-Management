@@ -76,7 +76,7 @@ def update_null_hours():
 def update_hours(cid_df):
     for index, row in cid_df.iterrows():
         cid = row['cid']
-        pilot_hours, atc_hours = get_hours(cid)
+        pilot_hours, atc_hours = get_hours(cid, "1995-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00")
         cursor.execute("""
             UPDATE LIST
             SET pilot_hours = ?, atc_hours = ?
@@ -87,20 +87,83 @@ def update_hours(cid_df):
 
 
 # VATSIM API call to get hours
-def get_hours(cid):
-    url = f"https://api.vatsim.net/v2/members/{cid}/stats"
+def get_hours(cid, start, end):
+    pilot_hours = get_pilot_hours(cid, start, end)
+    time.sleep(7)
+    atc_hours = get_atc_hours(cid, start, end)
+    print(pilot_hours, atc_hours)
+    return pilot_hours, atc_hours
+    
+
+def get_pilot_hours(cid, start, end):
+    start_range = datetime.fromisoformat(start)
+    end_range = datetime.fromisoformat(end)
+
+    url = f"https://api.vatsim.net/v2/members/{cid}/history?limit=10000"
     headers = {'Accept': 'application/json'}
-    
+
     response = requests.get(url, headers=headers)
-    
-    if response.status_code == 200:
-        data = response.json()
-        pilot_hours = data.get("pilot", 0.0)
-        keys_to_sum = ["s1", "s2", "s3", "c1", "c2", "c3", "i1", "i2", "i3", "sup", "adm"]
-        other_hours = sum(data.get(key, 0.0) for key in keys_to_sum)
-        return pilot_hours, other_hours
-    else:
-        return 0.0, 0.0
+
+    if response.status_code != 200:
+        return 0
+
+    data = response.json()
+    total_seconds = 0
+
+    for session in data.get('items', []):
+        start_str = session.get('start')
+        end_str = session.get('end')
+
+        if not start_str or not end_str:
+            continue
+
+        start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+
+        if end < start_range or start > end_range:
+            continue
+
+        actual_start = max(start, start_range)
+        actual_end = min(end, end_range)
+        total_seconds += (actual_end - actual_start).total_seconds()
+
+    return total_seconds / 3600  # Return in hours
+
+
+def get_atc_hours(cid, start, end):
+    start_range = datetime.fromisoformat(start)
+    end_range = datetime.fromisoformat(end)
+
+    url = f"https://api.vatsim.net/v2/members/{cid}/atc?limit=10000"
+    headers = {'Accept': 'application/json'}
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return 0
+
+    data = response.json()
+    total_seconds = 0
+
+    for session in data.get('items', []):
+        conn = session.get('connection_id', {})
+        start_str = conn.get('start')
+        end_str = conn.get('end')
+
+        if not start_str or not end_str:
+            continue
+
+        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+
+        if end_dt < start_range or start_dt > end_range:
+            continue
+
+        actual_start = max(start_dt, start_range)
+        actual_end = min(end_dt, end_range)
+        total_seconds += (actual_end - actual_start).total_seconds()
+
+    return total_seconds / 3600  # Return in hours
     
 
 # Change the null 3 month checker start dates to the first of the next month
@@ -155,14 +218,19 @@ def activity_checker():
     # 2) 5 hours every 3 months if on ATC roster (NOT IMPLEMENTED)
 
     today = datetime.today()
-    year = today.year
-    month = today.month - 3
-    if month <= 0:
-        month += 12
-        year -= 1
+    target_year = today.year
+    target_month = today.month - 3
+    if target_month <= 0:
+        target_month += 12
+        target_year -= 1
 
-    target_date = datetime(year, month, 1)
+    target_date = datetime(target_year, target_month, 1)
     target_str = target_date.strftime('%Y-%m-%d')
+    target_str_full = target_date.strftime('%Y-%m-%dT00:00:00+00:00')
+
+    current_month_start = datetime(today.year, today.month, 1)
+    prev_day = current_month_start - timedelta(seconds=1)
+    prev_day_str_full = prev_day.strftime('%Y-%m-%dT%H:%M:%S+00:00')
 
     query = """
     SELECT cid, pilot_hours
@@ -176,7 +244,7 @@ def activity_checker():
     print("\n\n========= Activity checks =========")
     for index, row in df.iterrows():
         cid = row.iloc[0]
-        pilot_hours, atc_hours = get_hours(cid)
+        pilot_hours, atc_hours = get_hours(cid,target_str_full, prev_day_str_full)
 
         # Meets requirements
         if float(pilot_hours) - float(row.iloc[1]) >= 10:
